@@ -1,6 +1,5 @@
 import argparse
 import json
-import sys
 import time
 from pathlib import Path
 
@@ -17,32 +16,41 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 PROJECT_ROOT = Path(__file__).parent.parent
 DOC_INDEX_PATH = PROJECT_ROOT / "data" / "kilt" / "kilt_docs_fever_evidence.jsonl"
-RETRIEVED_PATH = PROJECT_ROOT / "data" / "retrieved" / "fever_retrieved_docs_new_trans.jsonl"
+RETRIEVED_DIR = PROJECT_ROOT / "data" / "retrieved"
+RETRIEVED_PATHS = {
+    "transformer": RETRIEVED_DIR / "fever_retrieved_docs_new_trans.jsonl",
+    "tfidf": RETRIEVED_DIR / "fever_retrieved_doc_ids_tfidf.jsonl",
+    "word2vec": RETRIEVED_DIR / "fever_retrieved_doc_ids_word2vec.jsonl",
+}
+DEFAULT_CLAIMS_PATH = RETRIEVED_PATHS["transformer"]
 RESULTS_DIR = Path(__file__).parent / "results"
 
 MODEL_ID = "unsloth/Llama-3.1-8B-Instruct"
 SEED = 42
 
-LABELS = ["SUPPORTS", "REFUTES", "NOT ENOUGH INFO"]
+LABELS = ["SUPPORTS", "REFUTES"]
 LABEL_TO_ID = {l: i for i, l in enumerate(LABELS)}
 
 SYSTEM_PROMPT = (
-    "You are an expert fact-checker. Given a claim and (optionally) supporting "
-    "evidence passages from Wikipedia, decide whether the evidence SUPPORTS the "
-    "claim, REFUTES the claim, or provides NOT ENOUGH INFO to decide. "
-    "Respond with exactly one of: SUPPORTS, REFUTES, NOT ENOUGH INFO."
+    "You are an expert fact-checker. Given a claim and a set of retrieved "
+    "evidence passages from Wikipedia, decide whether the claim is SUPPORTS "
+    "(true) or REFUTES (false). The retrieved passages may include irrelevant "
+    "or off-topic material; ignore any passage that does not pertain to the "
+    "claim and base your verdict only on the passages that are actually "
+    "relevant. If no passage is clearly relevant, rely on your own knowledge. "
+    "Respond with exactly one word: SUPPORTS or REFUTES."
 )
 
 USER_PROMPT_BASELINE = """Claim: {claim}
 
-Your verdict (SUPPORTS, REFUTES, or NOT ENOUGH INFO):"""
+Your verdict (SUPPORTS or REFUTES):"""
 
 USER_PROMPT_RETRIEVAL = """Evidence:
 {evidence}
 
 Claim: {claim}
 
-Your verdict (SUPPORTS, REFUTES, or NOT ENOUGH INFO):"""
+Your verdict (SUPPORTS or REFUTES):"""
 
 
 def load_doc_index(path: Path) -> dict[str, dict]:
@@ -62,15 +70,20 @@ def load_doc_index(path: Path) -> dict[str, dict]:
 def load_claims(path: Path, limit: int | None) -> list[dict]:
     print(f"loading claims from {path}")
     claims = []
+    skipped_nei = 0
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            claims.append(json.loads(line))
+            entry = json.loads(line)
+            if entry["label"] not in LABEL_TO_ID:
+                skipped_nei += 1
+                continue
+            claims.append(entry)
             if limit is not None and len(claims) >= limit:
                 break
-    print(f"  {len(claims)} claims loaded")
+    print(f"  {len(claims)} claims loaded ({skipped_nei} NEI claims skipped)")
     return claims
 
 
@@ -102,8 +115,6 @@ def build_messages(claim, evidence_text, mode):
 
 def parse_prediction(raw: str):
     cleaned = raw.strip().upper()
-    if "NOT ENOUGH INFO" in cleaned or "NOT ENOUGH" in cleaned or "NEI" in cleaned:
-        return LABEL_TO_ID["NOT ENOUGH INFO"]
     if "REFUTE" in cleaned:
         return LABEL_TO_ID["REFUTES"]
     if "SUPPORT" in cleaned:
@@ -211,14 +222,16 @@ def parse_args():
     p.add_argument("--mode", choices=["baseline", "retrieval"], required=True,
                    help="baseline = claim only; retrieval = include retrieved passages")
     p.add_argument("--method", default="transformer",
-                   help="retrieval method tag, used in output filename")
+                   choices=list(RETRIEVED_PATHS.keys()),
+                   help="retrieval method; selects the retrieved-docs file and tags output")
     p.add_argument("--limit", type=int, default=1000,
                    help="number of claims to evaluate (None for all)")
     p.add_argument("--batch-size", type=int, default=4)
     p.add_argument("--max-passages-per-doc", type=int, default=3)
     p.add_argument("--max-evidence-chars", type=int, default=4000)
     p.add_argument("--max-input-tokens", type=int, default=4096)
-    p.add_argument("--retrieved-path", default=str(RETRIEVED_PATH))
+    p.add_argument("--retrieved-path", default=None,
+                   help="override the retrieved-docs file path (default: based on --method)")
     return p.parse_args()
 
 
@@ -227,7 +240,9 @@ def main():
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     doc_index = load_doc_index(DOC_INDEX_PATH) if args.mode == "retrieval" else {}
-    claims = load_claims(Path(args.retrieved_path), args.limit)
+
+    claims_path = Path(args.retrieved_path) if args.retrieved_path else RETRIEVED_PATHS[args.method]
+    claims = load_claims(claims_path, args.limit)
 
     print(f"loading {MODEL_ID}")
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
