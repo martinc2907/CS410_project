@@ -20,7 +20,8 @@ RETRIEVED_DIR = PROJECT_ROOT / "data" / "retrieved"
 RETRIEVED_PATHS = {
     "transformer": RETRIEVED_DIR / "fever_retrieved_docs_new_trans.jsonl",
     "tfidf": RETRIEVED_DIR / "fever_retrieved_doc_ids_tfidf.jsonl",
-    "word2vec": RETRIEVED_DIR / "fever_retrieved_doc_ids_word2vec.jsonl",
+    "word2vec": RETRIEVED_DIR / "fever_retrieved_doc_ids_pretrained_word2vec_pure.jsonl",
+    "probabilistic": RETRIEVED_DIR / "fever_qlm_retrieved.jsonl",
 }
 DEFAULT_CLAIMS_PATH = RETRIEVED_PATHS["transformer"]
 RESULTS_DIR = Path(__file__).parent / "results"
