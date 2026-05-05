@@ -1,8 +1,10 @@
 import json
+import os
 import re
 
 from nltk.corpus import stopwords
 from nltk.stem import PorterStemmer
+from tqdm import tqdm
 
 stop_words = set(stopwords.words("english"))
 stemmer = PorterStemmer()
@@ -40,43 +42,70 @@ def clean_passage(text: str, clean_minimal=True) -> str:
 
 
 def main(stop_idx=None):
-    with open(input_path, "r", encoding="utf-8") as fin, \
-        open(output_path, "w", encoding="utf-8") as fout:
+    os.makedirs(output_dir, exist_ok=True)
 
+    with open(input_path, "r", encoding="utf-8") as fin:
+        fout = None
+        shard_idx = 0
+        passages_in_shard = 0
         i = 0
-        for line in fin:
-            line = line.strip()
-            if not line:
-                continue
 
-            entry = json.loads(line)
-
-            doc_id = entry["wikipedia_id"]
-            title = entry["wikipedia_title"]
-            passages = entry.get("text", [])
-
-            for idx, p in enumerate(passages):
-                cleaned = clean_passage(p)
-
-                if len(cleaned) < 40:
+        try:
+            for line in fin:
+                line = line.strip()
+                if not line:
                     continue
 
-                out = {
-                    "passage_id": f"{doc_id}_{idx}",
-                    "doc_id": doc_id,
-                    "title": title,
-                    "text": cleaned
-                }
+                entry = json.loads(line)
 
-                fout.write(json.dumps(out, ensure_ascii=False) + "\n")
-            i += 1
+                doc_id = entry["wikipedia_id"]
+                title = entry["wikipedia_title"]
+                passages = entry.get("text", [])
 
-            if i == stop_idx:
-                break
+                for idx, p in enumerate(passages):
+                    cleaned = clean_passage(p, clean_minimal=False)
+
+                    if len(cleaned) < 40:
+                        continue
+
+                    if fout is None or passages_in_shard == shard_size:
+                        if fout is not None:
+                            fout.close()
+
+                        output_path = os.path.join(
+                            output_dir,
+                            f"kilt_passages_{shard_idx:05d}.jsonl"
+                        )
+                        fout = open(output_path, "w", encoding="utf-8")
+                        shard_idx += 1
+                        passages_in_shard = 0
+
+                    out = {
+                        "passage_id": f"{doc_id}_{idx}",
+                        "doc_id": doc_id,
+                        "title": title,
+                        "text": cleaned
+                    }
+
+                    fout.write(json.dumps(out, ensure_ascii=False) + "\n")
+                    passages_in_shard += 1
+                i += 1
+
+                if i % 10000 == 0:
+                    print(i)
+
+                if i == stop_idx:
+                    break
+
+
+        finally:
+            if fout is not None:
+                fout.close()
 
 
 if __name__ == "__main__":
     input_path = "kilt_knowledgesource.json"
-    output_path = "kilt_passages.jsonl"
+    output_dir = "kilt_passages_preprocessed"
+    shard_size = 500000
 
-    main(stop_idx=50)
+    main()
